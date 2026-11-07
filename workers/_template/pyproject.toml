@@ -1,0 +1,22 @@
+[project]
+name = "worker-template"
+version = "0.1.0"
+requires-python = ">=3.10"
+# Add the model's packages here, e.g. "torch", "transformers", or a git URL:
+#   "idol @ git+https://github.com/speridlabs/idol-sdk.git"
+dependencies = []
+
+[tool.uv]
+package = false
+
+# torch/torchvision come from the CUDA 12.4 wheel index instead of PyPI's CPU build.
+# uv shares one package cache (UV_CACHE_DIR, set by start.ps1) and hardlinks from it,
+# so several workers using torch cost the disk space of one copy.
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true

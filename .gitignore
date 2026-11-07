@@ -1,0 +1,32 @@
+# Tracked: source (scripts, workers/_template, *.ps1) and docs (README, docs/, CONTRACT.md, folder_description.md).
+# Not tracked: anything setup.ps1 / manage.py can re-create, and everything specific to one PC: model weights,
+# models/registry.json (your models, roles, hardware), per-folder model listings, your own workers.
+
+# Downloaded binaries: re-created by scripts/setup.ps1 (keep only our descriptions)
+/bin/**
+!/bin/**/
+!/bin/**/folder_description.md
+/bin/audiocpp/model_specs/
+/bin/audiocpp/tools/
+
+# Model weights, the registry and per-folder listings are this PC's state (setup.ps1 creates a fresh registry)
+/models/**
+!/models/folder_description.md
+
+# Your own Python workers (keep the template)
+/workers/*/
+!/workers/_template/
+
+# Generated per machine by manage.py (absolute paths, this PC's pools)
+/config/llama-swap.yaml
+/config/audiocpp/*.json
+
+# Caches, tools, downloads, leftovers
+/.uv-cache/
+/tools/
+/_downloads/
+/_trash/
+.venv/
+__pycache__/
+*.pyc
+*.part
