@@ -6,6 +6,11 @@ text-to-speech behind **one OpenAI-compatible endpoint**. It sizes itself to you
 No Docker, no system Python, no CUDA toolkit, no admin rights. Two commands and any OpenAI-compatible app can
 use `http://127.0.0.1:8080/v1`.
 
+![Demo: install, add a model, swap a role, start, chat -> speech -> transcript, verify](docs/demo.gif)
+
+<sub>Real output on an RTX 3050 Laptop (4 GB). Waits are sped up and labeled. [Watch with sound (MP4)](docs/demo.mp4): the
+voice is the actual Kokoro text-to-speech output.</sub>
+
 Built on [llama-swap](https://github.com/mostlygeek/llama-swap), which does the model swapping. This kit adds
 what you'd otherwise do by hand: installing the right backend builds for your GPU, finding, downloading and
 converting models, estimating how much memory each needs, and keeping the config in sync.

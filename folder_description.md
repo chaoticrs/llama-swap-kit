@@ -1,4 +1,4 @@
-# D:\LocalAI (project root)
+# llama-swap-kit (project root)
 
 Local multi-model AI inference stack: one OpenAI-compatible endpoint (`http://127.0.0.1:8080`)
 in front of native C++ backends that are started on demand and unloaded when idle or when

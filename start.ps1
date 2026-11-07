@@ -29,5 +29,5 @@ $config = "$Root\config\llama-swap.yaml"
 $listen = (Get-Content "$Root\models\registry.json" -Raw | ConvertFrom-Json).listen
 if (-not $listen) { $listen = '127.0.0.1:8080' }
 
-Write-Host "LocalAI on http://$listen  (UI: http://$listen/ui)"
+Write-Host "llama-swap-kit on http://$listen  (UI: http://$listen/ui)"
 & "$Root\bin\llama-swap\llama-swap.exe" -config $config -listen $listen -watch-config

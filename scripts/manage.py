@@ -1,4 +1,4 @@
-"""Model manager for the LocalAI stack.
+"""Model manager for llama-swap-kit.
 
 Identifies a model (local file or Hugging Face repo), downloads/converts it if needed,
 registers it in models/registry.json and regenerates config/llama-swap.yaml.
@@ -450,9 +450,9 @@ def reestimate(reg, variant):
         m["size_mb"] = size
         cpu = m.get("device") == "cpu" or variant == "cpu"
         vram, ram = estimate(m["kind"], m["backend"], size, cpu, reg["pools"])
-        if abs(vram - m.get("vram_mb", 0)) > 16 or abs(ram - m.get("ram_mb", 0)) > 16:  # ignore rounding
+        if abs(vram - m.get("vram_mb", 0)) > 16 or abs(ram - m.get("ram_mb", 0)) > 16:  # don't log rounding
             changed.append(f"{mid}: vram {m.get('vram_mb')} -> {vram}, ram {m.get('ram_mb')} -> {ram}")
-            m["vram_mb"], m["ram_mb"] = vram, ram
+        m["vram_mb"], m["ram_mb"] = vram, ram
     return changed
 
 
@@ -483,7 +483,7 @@ def estimate(kind, backend, size_mb, cpu, pools):
         return 0, int(size_mb * 1.2 + 400)
     if kind in ("llm",):
         need = size_mb + 700  # weights + KV cache at 8k ctx + compute buffers
-        vram = min(v, need)
+        vram = int(min(v, need))
         return vram, int(max(0, need - vram) + 600)
     if kind in ("image", "video", "worker"):
         return v, int(size_mb + 1500)  # diffusion activations use whatever VRAM is left
