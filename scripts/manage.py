@@ -476,12 +476,20 @@ def absp(p):
     return f'"{s}"' if " " in s else s
 
 
+# VRAM a fully offloaded LLM needs on top of its file: 8k KV cache, compute buffers, CUDA context.
+# Measured on an RTX 3050 4 GB: Qwen3-4B Q4_K_M, 2382 MiB file -> 3701 MiB with -ngl 99 -np 1.
+FULL_OFFLOAD_MB = 1350
+
+
 def estimate(kind, backend, size_mb, cpu, pools):
     """Rough (vram_mb, ram_mb) for the capacity router. Override with --vram/--ram."""
     v = pools["vram"]
     if cpu:
-        return 0, int(size_mb * 1.2 + 400)
+        # audio.cpp's runtime adds ~1.3 GB on its own (Kokoro: 190 MB file, 1.7 GB resident, measured)
+        return 0, int(size_mb * 1.2 + (1500 if backend == "audiocpp" else 400))
     if kind in ("llm",):
+        if size_mb + FULL_OFFLOAD_MB <= v:  # fits entirely: backend_command() then forces every layer onto the GPU
+            return int(size_mb + FULL_OFFLOAD_MB), 600
         need = size_mb + 700  # weights + KV cache at 8k ctx + compute buffers
         vram = int(min(v, need))
         return vram, int(max(0, need - vram) + 600)
@@ -567,6 +575,13 @@ def backend_command(mid, m):
             cmd += f" --mmproj {absp(m['mmproj'])}"
         if m.get("device") == "cpu":
             cmd += " -ngl 0"
+        elif ("-ngl" not in extra and "--gpu-layers" not in extra
+              and m.get("vram_mb", 0) >= m.get("size_mb", 1e9) + FULL_OFFLOAD_MB):
+            # llama.cpp's automatic fit is cautious (it left 1.8 GB of a 4 GB card unused: 30 vs 57 tok/s),
+            # so when estimate() says the whole model fits, say so explicitly
+            cmd += " -ngl 99"
+        if "-np " not in extra and "--parallel" not in extra:
+            cmd += " -np 1"  # one user: a single slot gets the whole context instead of a quarter of it
         if "-c " not in extra and "--ctx-size" not in extra:
             cmd += " -c 8192"
         return cmd + extra, None, "/health"
@@ -596,6 +611,8 @@ def backend_command(mid, m):
     if m["backend"] == "worker":
         wdir = absp(m["path"])
         cmd = f"{b}/uv/uv.exe run --project {wdir} python {wdir}/server.py --port ${{PORT}}"
+        if m.get("model_dir"):
+            cmd += f" --model-dir {absp(m['model_dir'])}"
         return cmd + extra, None, "/health"
     raise ValueError(f"unknown backend {m['backend']}")
 
@@ -685,8 +702,8 @@ def capabilities_yaml(m):
     lines = ["    capabilities:",
              f"      in: [{', '.join(q(x) for x in io[0])}]",
              f"      out: [{', '.join(q(x) for x in io[1])}]"]
-    if kind == "tts" and m["backend"] == "audiocpp":
-        voices = audiocpp_voices(ROOT / m["path"])
+    if kind == "tts":
+        voices = audiocpp_voices(ROOT / m["path"]) if m["backend"] == "audiocpp" else m.get("voices")
         if voices:
             lines.append(f"      voices: [{', '.join(q(v) for v in voices)}]")
     return lines
@@ -759,9 +776,10 @@ def suggest_audiocpp(repo):
         tree = http_json(f"{HF}/api/models/audio-cpp/audio.cpp-gguf/tree/main")
     except Exception:
         return []
-    words = [w for w in re.split(r"[^a-z0-9]+", repo.split("/")[-1].lower()) if len(w) > 2]
-    return [t["path"] for t in tree if t["type"] == "directory"
-            and any(w in t["path"].lower() for w in words)]
+    # every word of the repo name must appear: "Underdog-Woof" must not match "Underdog-Bark-3.0-GGUF"
+    words = [w for w in re.split(r"[^a-z0-9]+", repo.split("/")[-1].lower()) if len(w) > 2 and w != "gguf"]
+    return [t["path"] for t in tree if t["type"] == "directory" and words
+            and all(w in t["path"].lower() for w in words)]
 
 
 def plan_hf(repo, args):
@@ -902,13 +920,46 @@ def do_convert(plan, args, mid, local_dir=None):
     return final, mmproj, final.stat().st_size / 2**20
 
 
-def scaffold_worker(plan, mid):
+TTS_PIPELINES = ("text-to-speech", "text-to-audio")
+SNAPSHOT_MAX_MB = 4096  # TTS repos up to this size are downloaded whole (code + weights) into models/tts/<id>
+
+
+def snapshot_repo(repo, dest):
+    """Download every file of a HF repo into dest (skipping files already there). Returns total MiB."""
+    files = hf_info(repo)["files"]
+    total = sum(files.values()) / 2**20
+    if total > SNAPSHOT_MAX_MB:
+        sys.exit(f"{repo} is {total:,.0f} MiB; too big to download whole. Use the generic worker (--worker without "
+                 f"a TTS repo) and let the model's own code fetch its weights.")
+    for f, size in sorted(files.items()):
+        target = dest / f
+        if not (target.exists() and target.stat().st_size == size):
+            download(hf_url(repo, f), target, size)
+    return total
+
+
+def add_requirements(wdir, model_dir):
+    """Copy plain `package>=x` lines from the repo's requirements.txt into the worker's pyproject."""
+    req = model_dir / "requirements.txt"
+    if not req.exists():
+        return []
+    deps = [ln.split("#")[0].strip() for ln in req.read_text(encoding="utf-8").splitlines()]
+    deps = [d for d in deps if d and not d.startswith(("-", "git+", "http"))]
+    if deps:
+        pp = wdir / "pyproject.toml"
+        pp.write_text(pp.read_text(encoding="utf-8").replace(
+            "dependencies = []", "dependencies = [" + ", ".join(json.dumps(d) for d in deps) + "]"), encoding="utf-8")
+    return deps
+
+
+def scaffold_worker(plan, mid, template="_template"):
     wdir = WORKERS / mid
     if wdir.exists():
         sys.exit(f"{rel(wdir)} already exists")
-    shutil.copytree(WORKERS / "_template", wdir, ignore=shutil.ignore_patterns(".venv", "__pycache__", "folder_description.md"))
+    shutil.copytree(WORKERS / template, wdir, ignore=shutil.ignore_patterns(".venv", "__pycache__", "folder_description.md"))
     pp = wdir / "pyproject.toml"
-    pp.write_text(pp.read_text(encoding="utf-8").replace('"worker-template"', f'"worker-{mid}"'), encoding="utf-8")
+    pp.write_text(re.sub(r'"worker-template[a-z-]*"', f'"worker-{mid}"', pp.read_text(encoding="utf-8"), count=1),
+                  encoding="utf-8")
     (wdir / "folder_description.md").write_text(
         f"# workers/{mid}\n\n"
         f"Python worker for `{plan['repo']}` ({plan.get('pipeline') or 'unknown task'}, library "
@@ -942,6 +993,27 @@ def cmd_inspect(args):
     else:
         plan = plan_hf(src, args)
         print(json.dumps({k: v for k, v in plan.items() if k != "files" or isinstance(v, list)}, indent=2))
+
+
+def add_tts_worker(args, reg, src, plan, mid):
+    """TTS repo with its own Python code: download it whole, wrap it in workers/_template_tts (OpenAI speech
+    endpoint), register it as kind `tts` so it can fill the `tts` role."""
+    model_dir = MODELS / "tts" / mid
+    print(f"\nText-to-speech repo: downloading it into {rel(model_dir)} and wrapping it as a tts worker")
+    size_mb = snapshot_repo(src, model_dir)
+    wdir = WORKERS / mid
+    if not (wdir.exists() and args.force):  # re-adding with --force keeps your filled-in server.py
+        wdir = scaffold_worker(plan, mid, template="_template_tts")
+    deps = add_requirements(wdir, model_dir)
+    run([BIN / "uv" / "uv.exe", "sync", "--project", wdir])
+    entry = build_entry(args, reg, "tts", "worker", wdir, f"{src}: Python TTS worker", {}, size_mb, f"hf:{src}")
+    entry["model_dir"] = rel(model_dir)
+    entry["voices"] = [v.strip() for v in (args.voices or "").split(",") if v.strip()]
+    register(reg, mid, entry, args.force)
+    print(f"\ndependencies from requirements.txt: {', '.join(deps) or '(none)'}"
+          f"\nnext: fill in load() in {rel(wdir)}/server.py (the model's code is in {rel(model_dir)}), then "
+          f"`role tts {mid}` and `check`. Until then it answers with a test tone."
+          + ("" if entry["voices"] else "\nTip: pass --voices a,b to list its voices in /v1/models (re-add with --force)."))
 
 
 def cmd_add(args):
@@ -991,8 +1063,13 @@ def cmd_add(args):
         entry = build_entry(args, reg, kind, backend, p, detail, extra, p.stat().st_size / 2**20, f"local:{p.name}")
         return register(reg, mid, entry, args.force)
 
-    plan = {"route": "worker", "repo": src, "kind": "worker", "detail": src, "size_mb": 0} if args.worker \
-        else plan_hf(src, args)
+    if args.worker:
+        info = hf_info(src)
+        plan = {"route": "worker", "repo": src, "kind": "worker", "detail": src,
+                "size_mb": sum(info["files"].values()) / 2**20,
+                "pipeline": info.get("pipeline_tag") or "", "library": info.get("library_name") or ""}
+    else:
+        plan = plan_hf(src, args)
     print(f"  -> {plan['kind']}: {plan['detail']}  [route: {plan['route']}]")
     mid = args.id or make_id(plan["files"][0] if plan["route"] == "file" else src.split("/")[-1])
 
@@ -1004,6 +1081,8 @@ def cmd_add(args):
             print("Run with --worker to wrap the original Python code instead.")
             if not args.worker:
                 return
+        if plan.get("pipeline") in TTS_PIPELINES:
+            return add_tts_worker(args, reg, src, plan, mid)
         if plan["size_mb"] > reg["pools"]["vram"]:
             print(f"warning: repo is {plan['size_mb']:,.0f} MiB, more than the {reg['pools']['vram']} MiB VRAM pool; "
                   f"it may need CPU offload or may not fit at all")
@@ -1193,7 +1272,7 @@ def cmd_check(args):
                 report(label, ok, f"HTTP {st}, {time.time() - t0:.1f}s")
             elif kind == "tts":
                 body = {"model": role, "input": "Hello from the contract check."}
-                voices = audiocpp_voices(ROOT / m["path"]) if m["backend"] == "audiocpp" else []
+                voices = audiocpp_voices(ROOT / m["path"]) if m["backend"] == "audiocpp" else m.get("voices") or []
                 if voices:
                     body["voice"] = voices[0]
                 st, b = _api(base, "/v1/audio/speech", body)
@@ -1244,6 +1323,10 @@ def cmd_remove(args):
             print(f"deleted {rel(owned)}")
         else:
             print(f"left {rel(owned)} in place (outside models/ and workers/)")
+        model_dir = ROOT / m["model_dir"] if m.get("model_dir") else None  # TTS worker's downloaded repo
+        if model_dir and model_dir.is_dir() and MODELS in model_dir.parents:
+            shutil.rmtree(model_dir)
+            print(f"deleted {rel(model_dir)}")
 
 
 def main():
@@ -1270,6 +1353,7 @@ def main():
     p.add_argument("--vram", type=int, help="override VRAM estimate (MiB)")
     p.add_argument("--ram", type=int, help="override RAM estimate (MiB)")
     p.add_argument("--worker", action="store_true", help="force the Python worker route")
+    p.add_argument("--voices", help="TTS worker voice names, comma-separated; the first is the default")
     p.add_argument("--keep-source", action="store_true", help="keep the HF download after converting")
     p.add_argument("--force", action="store_true", help="replace an existing registry entry with the same id")
     sub.add_parser("list", help="show registered models")

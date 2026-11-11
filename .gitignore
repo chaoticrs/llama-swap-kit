@@ -16,6 +16,7 @@
 # Your own Python workers (keep the template)
 /workers/*/
 !/workers/_template/
+!/workers/_template_tts/
 
 # Generated per machine by manage.py (absolute paths, this PC's pools)
 /config/llama-swap.yaml

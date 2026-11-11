@@ -54,12 +54,19 @@ From the model file size `S` (MB):
 
 | Kind | VRAM | RAM |
 |---|---|---|
-| LLM on GPU | min(budget, S + 700) | overflow + 600 |
+| LLM on GPU, fits whole (S + 1350 ≤ budget) | S + 1350 | 600 |
+| LLM on GPU, too big | min(budget, S + 700) | overflow + 600 |
 | Image / video / worker | whole budget (diffusion uses whatever is free) | S + 1500 |
 | audio.cpp on GPU | min(budget, 1.4·S + 500) | 600 |
-| anything on CPU | 0 | 1.2·S + 400 |
+| audio.cpp on CPU | 0 | 1.2·S + 1500 (its runtime alone is ~1.3 GB) |
+| anything else on CPU | 0 | 1.2·S + 400 |
 
 These are deliberately simple. Override any model with `--vram/--ram`.
+
+An LLM that fits whole is started with `-ngl 99`: llama.cpp's own automatic fit is cautious and left 1.8 GB
+of a 4 GB card unused (30 tokens/s against 57 with every layer on the GPU, measured with a 4B Q4 model). Every
+LLM is also started with `-np 1`, one slot holding the whole context, since the kit serves one user. Passing
+`-ngl` or `-np` in a model's `--args` overrides either.
 
 ## Roles
 

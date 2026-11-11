@@ -76,6 +76,25 @@ For text to speech, voice cloning and heavier ASR, audio.cpp has ready GGUF pack
 [audio-cpp/audio.cpp-gguf](https://huggingface.co/audio-cpp/audio.cpp-gguf). If you `add` a speech repo that
 has no GGUF, `add` lists matching packages from there.
 
+**TTS models that ship their own Python code** (no GGUF), for example
+[Underdog Woof](https://huggingface.co/ConwayResearch/Underdog-Woof), become a *TTS worker*:
+
+```powershell
+.\manage.ps1 add ConwayResearch/Underdog-Woof --worker --id underdog-woof --cpu --always-on --voices juno,mira
+```
+
+`add` downloads the whole repo (code and weights) into `models/tts/<id>/`, copies `workers/_template_tts` to
+`workers/<id>/`, installs the repo's `requirements.txt`, and registers it as a `tts` model. The worker
+serves the same `/v1/audio/speech` endpoint as Kokoro, so it can take over the `tts` role. Then:
+
+1. fill in `load()` in `workers/<id>/server.py`: return an object with `voices`, `sample_rate` and
+   `synth(text, voice)`. Until you do, it answers with a test tone. For Woof that's about ten lines:
+   `from underdog_woof import Woof, VOICES, SR` and one `Woof(voice=...)` per voice;
+2. `.\manage.ps1 role tts <id>`, then `.\manage.ps1 check`. The TTS -> STT round trip proves it speaks.
+
+An unknown voice name falls back to the worker's first voice, so apps that send Kokoro voices keep working.
+Check each model's license: Woof, for example, is non-commercial.
+
 `--cpu` keeps a model off the GPU, so it never competes with your LLM. The default Whisper and Kokoro
 models run on CPU and stay loaded (`--always-on`).
 

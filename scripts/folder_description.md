@@ -14,8 +14,8 @@
     routes it, downloads/converts if needed, registers it in `models/registry.json`, regenerates config.
     Routes: GGUF LLM -> llama.cpp; HF transformers LLM -> converted to GGUF (llama.cpp's converter in
     `tools/`) -> llama.cpp; diffusion -> sd.cpp; whisper ggml -> whisper.cpp; audio.cpp GGUF -> audio.cpp;
-    anything else -> Python worker scaffold from `workers/_template`. For audio repos without a GGUF it suggests
-    matching packages from `audio-cpp/audio.cpp-gguf`.
+    text-to-speech repos with their own Python code -> TTS worker from `workers/_template_tts` (repo downloaded into `models/tts/<id>/`, its `requirements.txt` installed, registered as kind `tts` with `--voices`); anything else -> Python worker scaffold from `workers/_template`. For audio repos without a GGUF it suggests
+    `audio-cpp/audio.cpp-gguf` packages whose name contains every word of the repo name.
     Local sources: a `.gguf`/whisper `.bin`/diffusion file is registered in place. A transformers LLM must be a
     whole folder (config.json + tokenizer + *.safetensors) or a safetensors file with config.json beside it; it
     is converted into `models/llm/<id>/` and the original folder is left untouched. A lone safetensors LLM

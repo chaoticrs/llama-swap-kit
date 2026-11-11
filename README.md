@@ -45,7 +45,9 @@ powershell -ExecutionPolicy Bypass -File start.ps1
 - **Verified contract:** `manage.ps1 check` tests every role end to end (including a real tool call and a
   TTS -> STT round trip), so you know the stack works after any change.
 - **Escape hatch for anything else:** models no engine supports run as Python workers (one isolated `uv`
-  environment each), started and stopped like the native engines.
+  environment each), started and stopped like the native engines. Python TTS models get a worker that serves
+  the standard speech endpoint, so they can replace the default voice (see
+  [docs/adding-models.md](docs/adding-models.md#speech)).
 - **Web UI** (from llama-swap) at `/ui`: playground, live logs, loaded models.
 
 ## Requirements
